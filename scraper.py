@@ -1,53 +1,77 @@
+import os
 import re
 import requests
 from bs4 import BeautifulSoup
 
-BASE_URL = "https://broppalone.com"
-
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
 }
 
-def get_latest_match_url():
-    try:
-        res = requests.get(BASE_URL, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        for a in soup.find_all('a', href=True):
-            href = a['href']
-            if BASE_URL in href or href.startswith('/'):
-                if any(x in href for x in ['/calcio/', '/partita/', '/live/', '/stream/']):
-                    return href if href.startswith('http') else BASE_URL + href
-        return BASE_URL
-    except Exception as e:
-        return BASE_URL
+# ⚠️ INSERISCI QUI I LINK REALI DELLE PAGINE WEB DA MONITORARE
+TARGET_URLS = [
+    {"name": "Player 1", "url": "https://sito-esempio-1.com/diretta"},
+    {"name": "Player 2", "url": "https://sito-esempio-2.com/diretta"},
+]
 
-def main():
-    match_url = get_latest_match_url()
-    stream_links = []
-    
-    try:
-        res = requests.get(match_url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        iframes = soup.find_all('iframe')
-        for idx, iframe in enumerate(iframes[:4], start=1):
-            src = iframe.get('src')
-            if src:
-                stream_links.append((f"Player {idx}", src))
-    except Exception as e:
-        print(f"Errore: {e}")
 
-    # Scrittura M3U compatibile con Smarters / webOS
-    with open("playlist.m3u", "w", encoding="utf-8") as f:
-        f.write("#EXTM3U x-tvg-url=\"\"\n")
-        if stream_links:
-            for name, url in stream_links:
-                f.write(f'#EXTINF:-1 tvg-id="{name}" tvg-name="{name}" group-title="Eventi Live",{name}\n')
-                f.write(f"{url}\n")
+def extract_stream_url(page_url):
+    try:
+        response = requests.get(page_url, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        content = response.text
+
+        # 1. Cerca link .m3u8 o .ts diretti nel codice sorgente
+        m3u8_matches = re.findall(
+            r'https?://[^\s\'"]+\.(?:m3u8|ts)[^\s\'"]*', content
+        )
+        if m3u8_matches:
+            return m3u8_matches[0]
+
+        # 2. Cerca all'interno di eventuali iframe
+        soup = BeautifulSoup(content, "html.parser")
+        for iframe in soup.find_all("iframe"):
+            iframe_src = iframe.get("src")
+            if iframe_src:
+                if not iframe_src.startswith("http"):
+                    base_url = "/".join(page_url.split("/")[:3])
+                    iframe_src = base_url + iframe_src
+
+                iframe_res = requests.get(
+                    iframe_src, headers=HEADERS, timeout=10
+                )
+                stream_matches = re.findall(
+                    r'https?://[^\s\'"]+\.(?:m3u8|ts)[^\s\'"]*', iframe_res.text
+                )
+                if stream_matches:
+                    return stream_matches[0]
+
+    except Exception as e:
+        print(f"Errore su {page_url}: {e}")
+
+    return None
+
+
+def build_playlist():
+    playlist = ["#EXTM3U"]
+
+    for target in TARGET_URLS:
+        stream_url = extract_stream_url(target["url"])
+        if stream_url:
+            playlist.append(
+                f'#EXTINF:-1 group-title="Eventi Live",{target["name"]}'
+            )
+            playlist.append(stream_url)
+            print(f"OK: {target['name']} -> {stream_url}")
         else:
-            f.write('#EXTINF:-1 tvg-id="P1" tvg-name="Player 1" group-title="Eventi Live",Player 1\n')
-            f.write("https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8\n")
-            f.write('#EXTINF:-1 tvg-id="P2" tvg-name="Player 2" group-title="Eventi Live",Player 2\n')
-            f.write("https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8\n")
+            print(f"ERRORE: Nessun flusso trovato per {target['name']}")
+
+    with open("playlist.m3u", "w", encoding="utf-8") as f:
+        f.write("\n".join(playlist) + "\n")
+
 
 if __name__ == "__main__":
-    main()
+    build_playlist()
