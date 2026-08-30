@@ -1,0 +1,31 @@
+name: Aggiorna Playlist IPTV
+
+on:
+  schedule:
+    - cron: '0 12 * * 6' # Esegue ogni sabato alle 12:00 UTC
+  workflow_dispatch: # Permette l'avvio manuale con un click
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configura Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Installa dipendenze
+        run: pip install requests beautifulsoup4
+
+      - name: Esegui Scraper
+        run: python scraper.py
+
+      - name: Salva e aggiorna playlist.m3u
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add playlist.m3u
+          git commit -m "Aggiornamento playlist IPTV" || exit 0
+          git push
