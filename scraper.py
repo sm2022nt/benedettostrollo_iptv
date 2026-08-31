@@ -9,7 +9,7 @@ def get_match_links(page):
     """Raccoglie le pagine degli eventi dalla home."""
     match_urls = []
     try:
-        page.goto(HOME_URL, wait_until="domcontentloaded", timeout=30000)
+        page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
         content = page.content()
         soup = BeautifulSoup(content, "html.parser")
 
@@ -29,33 +29,31 @@ def get_match_links(page):
     return match_urls
 
 def extract_m3u8_stream(context, match_url):
-    """Apre la pagina con un browser reale e ascolta il traffico di rete per trovare il link .m3u8."""
+    """Apre la pagina e intercetta il link .m3u8 al volo senza attendere il caricamento completo."""
     found_stream = []
-
     page = context.new_page()
 
-    # Intercetta tutte le richieste di rete inviate dalla pagina/player
+    # Intercetta il link .m3u8 appena passa in rete
     def handle_request(request):
         url = request.url
         if ".m3u8" in url and not found_stream:
+            print(f"  -> Trovato m3u8: {url}")
             found_stream.append(url)
 
     page.on("request", handle_request)
 
     try:
-        page.goto(match_url, wait_until="networkidle", timeout=25000)
+        # Usa 'domcontentloaded' invece di 'networkidle' per non bloccarsi
+        page.goto(match_url, wait_until="domcontentloaded", timeout=12000)
+        
+        # Attende massimo 5 secondi per catturare lo streaming
+        for _ in range(10):
+            if found_stream:
+                break
+            page.wait_for_timeout(500)
 
-        # Clicca su eventuali iFrame o pulsanti "Play" se presenti
-        iframes = page.frames
-        for frame in iframes:
-            try:
-                frame.click("video", timeout=2000)
-            except Exception:
-                pass
-
-        page.wait_for_timeout(4000)
     except Exception as e:
-        print(f"Errore caricamento {match_url}: {e}")
+        print(f"Avviso durante caricamento {match_url}: {e}")
     finally:
         page.close()
 
@@ -65,7 +63,6 @@ def main():
     playlist = ["#EXTM3U"]
     
     with sync_playwright() as p:
-        # Avvia un browser reale in modalità headless con User-Agent standard
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -75,18 +72,17 @@ def main():
         matches = get_match_links(home_page)
         home_page.close()
 
-        print(f"Eventi trovati: {len(matches)}")
+        print(f"Eventi trovati in Home Page: {len(matches)}")
 
         for match in matches:
-            print(f"Analisi in corso per: {match['name']}...")
+            print(f"Analisi: {match['name']}...")
             stream_url = extract_m3u8_stream(context, match["url"])
             
             if stream_url:
                 playlist.append(f'#EXTINF:-1 group-title="Eventi Live",{match["name"]}')
                 playlist.append(stream_url)
-                print(f"  [OK] Flusso intercettato: {stream_url}")
             else:
-                print("  [KO] Nessun flusso .m3u8 intercettato.")
+                print("  -> Nessun flusso .m3u8 intercettato.")
 
         browser.close()
 
