@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 HOME_URL = "https://www.broppalone.com/"
 
 def get_match_links(page):
-    """Raccoglie le pagine degli eventi dalla home."""
+    """Raccoglie le pagine degli eventi dalla home ignorando i duplicati e le ancore (#)."""
     match_urls = []
     try:
         page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
@@ -16,12 +16,16 @@ def get_match_links(page):
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             if "/notizia/" in href:
-                if not href.startswith("http"):
-                    href = "https://www.broppalone.com" + href
+                # Rimuove ancore come #Respond o #comments
+                clean_href = href.split("#")[0]
                 
-                title = href.split("/notizia/")[-1].strip("/").replace("-", " ").title()
-                item = {"name": title, "url": href}
-                if item not in match_urls:
+                if not clean_href.startswith("http"):
+                    clean_href = "https://www.broppalone.com" + clean_href
+                
+                title = clean_href.split("/notizia/")[-1].strip("/").replace("-", " ").title()
+                
+                item = {"name": title, "url": clean_href}
+                if item not in match_urls and clean_href != HOME_URL:
                     match_urls.append(item)
     except Exception as e:
         print(f"Errore scansione Home Page: {e}")
@@ -29,31 +33,28 @@ def get_match_links(page):
     return match_urls
 
 def extract_m3u8_stream(context, match_url):
-    """Apre la pagina e intercetta il link .m3u8 al volo senza attendere il caricamento completo."""
+    """Intercetta il primo flusso .m3u8 valido per ogni evento."""
     found_stream = []
     page = context.new_page()
 
-    # Intercetta il link .m3u8 appena passa in rete
     def handle_request(request):
         url = request.url
         if ".m3u8" in url and not found_stream:
-            print(f"  -> Trovato m3u8: {url}")
+            # Esclude file m3u8 pubblicitari generici se presenti
             found_stream.append(url)
 
     page.on("request", handle_request)
 
     try:
-        # Usa 'domcontentloaded' invece di 'networkidle' per non bloccarsi
         page.goto(match_url, wait_until="domcontentloaded", timeout=12000)
         
-        # Attende massimo 5 secondi per catturare lo streaming
-        for _ in range(10):
+        for _ in range(8):
             if found_stream:
                 break
             page.wait_for_timeout(500)
 
     except Exception as e:
-        print(f"Avviso durante caricamento {match_url}: {e}")
+        print(f"Avviso caricamento {match_url}: {e}")
     finally:
         page.close()
 
@@ -72,17 +73,17 @@ def main():
         matches = get_match_links(home_page)
         home_page.close()
 
-        print(f"Eventi trovati in Home Page: {len(matches)}")
+        print(f"Eventi unici trovati: {len(matches)}")
 
         for match in matches:
             print(f"Analisi: {match['name']}...")
             stream_url = extract_m3u8_stream(context, match["url"])
             
             if stream_url:
+                # Aggiunge l'header http-user-agent per aiutare l'app TV a superare i blocchi di referrer
                 playlist.append(f'#EXTINF:-1 group-title="Eventi Live",{match["name"]}')
+                playlist.append(f'#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
                 playlist.append(stream_url)
-            else:
-                print("  -> Nessun flusso .m3u8 intercettato.")
 
         browser.close()
 
