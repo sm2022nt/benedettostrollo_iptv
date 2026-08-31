@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 HOME_URL = "https://www.broppalone.com/"
 
 def get_match_links(page):
-    """Raccoglie i link degli eventi ignorando ancore e duplicati."""
+    """Raccoglie le pagine degli eventi dalla home."""
     match_urls = []
     try:
         page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
@@ -16,15 +16,12 @@ def get_match_links(page):
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             if "/notizia/" in href:
-                clean_href = href.split("#")[0]
+                if not href.startswith("http"):
+                    href = "https://www.broppalone.com" + href
                 
-                if not clean_href.startswith("http"):
-                    clean_href = "https://www.broppalone.com" + clean_href
-                
-                title = clean_href.split("/notizia/")[-1].strip("/").replace("-", " ").title()
-                
-                item = {"name": title, "url": clean_href}
-                if item not in match_urls and clean_href != HOME_URL:
+                title = href.split("/notizia/")[-1].strip("/").replace("-", " ").title()
+                item = {"name": title, "url": href}
+                if item not in match_urls:
                     match_urls.append(item)
     except Exception as e:
         print(f"Errore scansione Home Page: {e}")
@@ -32,19 +29,19 @@ def get_match_links(page):
     return match_urls
 
 def extract_m3u8_stream(context, match_url):
-    """Intercetta il traffico di rete impostando il Referer corretto del sito."""
+    """Apre la pagina e intercetta il link .m3u8 al volo senza attendere il caricamento completo."""
     found_stream = []
     page = context.new_page()
 
     def handle_request(request):
         url = request.url
         if ".m3u8" in url and not found_stream:
+            print(f"  -> Trovato m3u8: {url}")
             found_stream.append(url)
 
     page.on("request", handle_request)
 
     try:
-        # Passa dal sito con Referer impostato
         page.goto(match_url, wait_until="domcontentloaded", timeout=12000)
         
         for _ in range(10):
@@ -53,7 +50,7 @@ def extract_m3u8_stream(context, match_url):
             page.wait_for_timeout(500)
 
     except Exception as e:
-        print(f"Avviso caricamento {match_url}: {e}")
+        print(f"Avviso durante caricamento {match_url}: {e}")
     finally:
         page.close()
 
@@ -64,31 +61,25 @@ def main():
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # Usa uno spoofing completo di Chrome Desktop reale
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            extra_http_headers={
-                "Referer": "https://www.broppalone.com/"
-            }
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         
         home_page = context.new_page()
         matches = get_match_links(home_page)
         home_page.close()
 
-        print(f"Eventi trovati: {len(matches)}")
+        print(f"Eventi trovati in Home Page: {len(matches)}")
 
         for match in matches:
             print(f"Analisi: {match['name']}...")
             stream_url = extract_m3u8_stream(context, match["url"])
             
             if stream_url:
-                # Aggiunta degli header HTTP direttamente nell'URL M3U per le app IPTV
-                formatted_url = f"{stream_url}|Referer=https://www.broppalone.com/&User-Agent=Mozilla/5.0"
-                
                 playlist.append(f'#EXTINF:-1 group-title="Eventi Live",{match["name"]}')
-                playlist.append(formatted_url)
-                print(f"  [OK] Link generato correttamente.")
+                playlist.append(stream_url)
+            else:
+                print("  -> Nessun flusso .m3u8 intercettato.")
 
         browser.close()
 
