@@ -2,31 +2,33 @@ name: Aggiorna Playlist IPTV
 
 on:
   schedule:
-    - cron: '0 12 * * 6' # Avvio automatico ogni sabato alle 12:00 UTC
-  workflow_dispatch: # Permette l'avvio manuale con un click
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
 
 jobs:
-  update:
+  run-scraper:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout del codice
+        uses: actions/checkout@v4
 
       - name: Configura Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.10'
 
-      - name: Installa dipendenze
-        run: pip install requests beautifulsoup4
+      - name: Installa dipendenze e Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright beautifulsoup4
+          playwright install chromium --with-deps
 
       - name: Esegui Scraper
         run: python scraper.py
 
-      - name: Salva e aggiorna playlist.m3u
+      - name: Commit e Push delle modifiche
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          touch playlist.m3u
           git add playlist.m3u
-          git commit -m "Aggiornamento playlist IPTV" || exit 0
-          git push
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Aggiornamento playlist IPTV" && git push)
