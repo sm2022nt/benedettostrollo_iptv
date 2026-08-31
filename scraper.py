@@ -8,71 +8,87 @@ HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    )
+    ),
+    "Referer": "https://www.broppalone.com/",
 }
 
 HOME_URL = "https://www.broppalone.com/"
 
 
 def get_match_links():
-    """Scansiona la home page e trova tutti i link delle notizie/partite."""
+    """Estrae tutti i link delle partite dalla home page."""
     match_urls = []
     try:
         response = requests.get(HOME_URL, headers=HEADERS, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Cerca tutti i link che contengono '/notizia/'
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             if "/notizia/" in href:
-                # Gestisce URL relativi o completi
                 if not href.startswith("http"):
                     href = "https://www.broppalone.com" + href
-                
-                # Pulisce il nome della partita dallo slug dell'URL
-                title = href.split("/notizia/")[-1].replace("/", "").replace("-", " ").title()
-                
-                if {"name": title, "url": href} not in match_urls:
-                    match_urls.append({"name": title, "url": href})
+
+                title = href.split("/notizia/")[-1].strip("/").replace("-", " ").title()
+
+                item = {"name": title, "url": href}
+                if item not in match_urls:
+                    match_urls.append(item)
 
     except Exception as e:
-        print(f"Errore durante la scansione della Home: {e}")
+        print(f"Errore lettura home page: {e}")
 
     return match_urls
 
 
 def extract_stream_url(page_url):
-    """Cerca il flusso .m3u8 o .ts dentro la pagina della partita o negli iframe."""
+    """Analizza la pagina della notizia e gli iframe collegati per trovare il file .m3u8."""
     try:
-        response = requests.get(page_url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        content = response.text
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        
+        res = session.get(page_url, timeout=10)
+        content = res.text
 
-        # 1. Cerca link diretti .m3u8 o .ts
-        m3u8_matches = re.findall(
-            r'https?://[^\s\'"]+\.(?:m3u8|ts)[^\s\'"]*', content
-        )
-        if m3u8_matches:
-            return m3u8_matches[0]
+        # 1. Ricerca diretta nel codice sorgente della pagina
+        matches = re.findall(r'https?://[^\s\'"]+\.m3u8[^\s\'"]*', content)
+        if matches:
+            return matches[0]
 
-        # 2. Cerca negli iframe incorporati
+        # 2. Analisi degli iframe presenti nella pagina
         soup = BeautifulSoup(content, "html.parser")
-        for iframe in soup.find_all("iframe"):
-            iframe_src = iframe.get("src")
-            if iframe_src:
-                if not iframe_src.startswith("http"):
-                    iframe_src = "https://www.broppalone.com" + iframe_src
+        iframes = soup.find_all("iframe")
 
-                iframe_res = requests.get(iframe_src, headers=HEADERS, timeout=10)
-                stream_matches = re.findall(
-                    r'https?://[^\s\'"]+\.(?:m3u8|ts)[^\s\'"]*', iframe_res.text
-                )
-                if stream_matches:
-                    return stream_matches[0]
+        for iframe in iframes:
+            src = iframe.get("src") or iframe.get("data-src")
+            if not src:
+                continue
+
+            if src.startswith("//"):
+                src = "https:" + src
+            elif src.startswith("/"):
+                src = "https://www.broppalone.com" + src
+
+            try:
+                # Ispeziona l'iframe interno al player
+                iframe_res = session.get(src, timeout=10)
+                iframe_text = iframe_res.text
+
+                # Cerca link m3u8 dentro l'iframe
+                m3u8_inside = re.findall(r'https?://[^\s\'"]+\.m3u8[^\s\'"]*', iframe_text)
+                if m3u8_inside:
+                    return m3u8_inside[0]
+
+                # Cerca variabili JavaScript con lo stream (es. source: '...', file: '...')
+                js_matches = re.findall(r'(?:file|source|src)\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']', iframe_text)
+                if js_matches:
+                    return js_matches[0]
+
+            except Exception:
+                continue
 
     except Exception as e:
-        print(f"Errore durante l'estrazione su {page_url}: {e}")
+        print(f"Errore estrazione da {page_url}: {e}")
 
     return None
 
@@ -80,24 +96,21 @@ def extract_stream_url(page_url):
 def build_playlist():
     playlist = ["#EXTM3U"]
     matches = get_match_links()
-    print(f"Trovate {len(matches)} partite in home page.")
+    print(f"Partite trovate in home page: {len(matches)}")
 
     for match in matches:
-        print(f"Analizzo: {match['name']}...")
+        print(f"Elaborazione: {match['name']}...")
         stream_url = extract_stream_url(match["url"])
-        
+
         if stream_url:
             playlist.append(f'#EXTINF:-1 group-title="Eventi Live",{match["name"]}')
             playlist.append(stream_url)
-            print(f"  -> OK: {stream_url}")
+            print(f"  -> Link estratto: {stream_url}")
         else:
-            print(f"  -> KO: Nessun flusso trovato.")
+            print("  -> NESSUN FLUSSO TROVATO (Player dinamico o protetto)")
 
-    # Salva il file M3U
     with open("playlist.m3u", "w", encoding="utf-8") as f:
         f.write("\n".join(playlist) + "\n")
-
-    print("File playlist.m3u generato con successo!")
 
 
 if __name__ == "__main__":
