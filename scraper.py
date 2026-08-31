@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 HOME_URL = "https://www.broppalone.com/"
 
 def get_match_links(page):
-    """Raccoglie le pagine degli eventi dalla home ignorando i duplicati e le ancore (#)."""
+    """Raccoglie i link degli eventi ignorando ancore e duplicati."""
     match_urls = []
     try:
         page.goto(HOME_URL, wait_until="domcontentloaded", timeout=15000)
@@ -16,7 +16,6 @@ def get_match_links(page):
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             if "/notizia/" in href:
-                # Rimuove ancore come #Respond o #comments
                 clean_href = href.split("#")[0]
                 
                 if not clean_href.startswith("http"):
@@ -33,22 +32,22 @@ def get_match_links(page):
     return match_urls
 
 def extract_m3u8_stream(context, match_url):
-    """Intercetta il primo flusso .m3u8 valido per ogni evento."""
+    """Intercetta il traffico di rete impostando il Referer corretto del sito."""
     found_stream = []
     page = context.new_page()
 
     def handle_request(request):
         url = request.url
         if ".m3u8" in url and not found_stream:
-            # Esclude file m3u8 pubblicitari generici se presenti
             found_stream.append(url)
 
     page.on("request", handle_request)
 
     try:
+        # Passa dal sito con Referer impostato
         page.goto(match_url, wait_until="domcontentloaded", timeout=12000)
         
-        for _ in range(8):
+        for _ in range(10):
             if found_stream:
                 break
             page.wait_for_timeout(500)
@@ -65,25 +64,31 @@ def main():
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        # Usa uno spoofing completo di Chrome Desktop reale
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            extra_http_headers={
+                "Referer": "https://www.broppalone.com/"
+            }
         )
         
         home_page = context.new_page()
         matches = get_match_links(home_page)
         home_page.close()
 
-        print(f"Eventi unici trovati: {len(matches)}")
+        print(f"Eventi trovati: {len(matches)}")
 
         for match in matches:
             print(f"Analisi: {match['name']}...")
             stream_url = extract_m3u8_stream(context, match["url"])
             
             if stream_url:
-                # Aggiunge l'header http-user-agent per aiutare l'app TV a superare i blocchi di referrer
+                # Aggiunta degli header HTTP direttamente nell'URL M3U per le app IPTV
+                formatted_url = f"{stream_url}|Referer=https://www.broppalone.com/&User-Agent=Mozilla/5.0"
+                
                 playlist.append(f'#EXTINF:-1 group-title="Eventi Live",{match["name"]}')
-                playlist.append(f'#EXTVLCOPT:http-user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
-                playlist.append(stream_url)
+                playlist.append(formatted_url)
+                print(f"  [OK] Link generato correttamente.")
 
         browser.close()
 
